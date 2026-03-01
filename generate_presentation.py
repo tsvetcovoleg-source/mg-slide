@@ -166,7 +166,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Берёт вопросы из Word.docx и подставляет их тематику и текст вопроса "
-            "в слайды 6-14 и их повторы 16-24 и 26-34 шаблона Presentation1.pptx"
+            "в слайды 6-14 и повторы 16-24/26-34 (в 26-34 также подставляет верный ответ)"
         )
     )
     parser.add_argument("--word", default="Word.docx", type=Path, help="Путь к Word-файлу")
@@ -199,14 +199,17 @@ def main() -> None:
             continue
 
         base_slide_number = question_number + 5
-        replacements = {
+        base_replacements = {
             "тематика": question.theme,
             "вопрос": question.question,
         }
 
-        slide_replacements[base_slide_number] = replacements
-        slide_replacements[base_slide_number + 10] = replacements.copy()
-        slide_replacements[base_slide_number + 20] = replacements.copy()
+        slide_replacements[base_slide_number] = base_replacements.copy()
+        slide_replacements[base_slide_number + 10] = base_replacements.copy()
+
+        answer_slide_replacements = base_replacements.copy()
+        answer_slide_replacements["верный ответ"] = question.answer
+        slide_replacements[base_slide_number + 20] = answer_slide_replacements
 
     if missing_numbers:
         missing = ", ".join(str(n) for n in missing_numbers)
@@ -224,9 +227,12 @@ def main() -> None:
     print(f"Готово: создан файл {args.output}")
     for slide_number in sorted(slide_replacements):
         question = slide_replacements[slide_number]
-        print(
+        message = (
             f"Слайд {slide_number}: тематика='{question['тематика']}', вопрос='{question['вопрос']}'"
         )
+        if "верный ответ" in question:
+            message += f", верный ответ='{question['верный ответ']}'"
+        print(message)
 
 
 if __name__ == "__main__":
