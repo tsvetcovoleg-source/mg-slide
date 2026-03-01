@@ -133,22 +133,29 @@ def replace_in_shape(shape, replacements: dict[str, str]) -> None:
 def fill_slide_placeholders(
     presentation_path: Path,
     output_path: Path,
-    slide_number: int,
-    replacements: dict[str, str],
+    slide_replacements: dict[int, dict[str, str]],
 ) -> None:
     prs = Presentation(str(presentation_path))
 
-    slide_index = slide_number - 1
-    if slide_index < 0 or slide_index >= len(prs.slides):
-        raise ValueError(
-            f"В презентации {len(prs.slides)} слайдов, а запрошен слайд {slide_number}."
-        )
+    for slide_number, replacements in slide_replacements.items():
+        slide_index = slide_number - 1
+        if slide_index < 0 or slide_index >= len(prs.slides):
+            raise ValueError(
+                f"В презентации {len(prs.slides)} слайдов, а запрошен слайд {slide_number}."
+            )
 
-    slide = prs.slides[slide_index]
-    for shape in slide.shapes:
-        replace_in_shape(shape, replacements)
+        slide = prs.slides[slide_index]
+        for shape in slide.shapes:
+            replace_in_shape(shape, replacements)
 
     prs.save(str(output_path))
+
+
+def find_question(questions: list[QuestionItem], number: int) -> QuestionItem | None:
+    for question in questions:
+        if question.number == number:
+            return question
+    return None
 
 
 def main() -> None:
@@ -177,19 +184,30 @@ def main() -> None:
     if not questions:
         raise ValueError("В Word-файле не найдено ни одного корректного блока с Тематикой и Вопросом.")
 
-    first = questions[0]
+    first = find_question(questions, 1) or questions[0]
+    second = find_question(questions, 2) or (questions[1] if len(questions) > 1 else None)
+
+    if second is None:
+        raise ValueError("В Word-файле не найден второй вопрос (№2) для заполнения 7-го слайда.")
+
     fill_slide_placeholders(
         presentation_path=args.template,
         output_path=args.output,
-        slide_number=6,
-        replacements={
-            "тематика": first.theme,
-            "вопрос": first.question,
+        slide_replacements={
+            6: {
+                "тематика": first.theme,
+                "вопрос": first.question,
+            },
+            7: {
+                "тематика": second.theme,
+                "вопрос": second.question,
+            },
         },
     )
 
     print(f"Готово: создан файл {args.output}")
-    print(f"Подставлено: тематика='{first.theme}', вопрос='{first.question}'")
+    print(f"Слайд 6: тематика='{first.theme}', вопрос='{first.question}'")
+    print(f"Слайд 7: тематика='{second.theme}', вопрос='{second.question}'")
 
 
 if __name__ == "__main__":
