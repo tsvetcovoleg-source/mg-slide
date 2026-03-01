@@ -198,6 +198,103 @@ def parse_round_without_theme_from_docx(
     return items[:max_questions]
 
 
+def parse_round_with_section_themes_from_docx(
+    docx_path: Path,
+    round_title: str,
+    max_questions: int,
+) -> list[QuestionItem]:
+    """Parse a numbered round where themes are declared as `Тематика N: ...` for groups of questions."""
+    doc = Document(str(docx_path))
+    lines = [p.text.strip() for p in doc.paragraphs]
+
+    start_index = next((i for i, line in enumerate(lines) if normalize_spaces(line).lower() == round_title.lower()), None)
+    if start_index is None:
+        return []
+
+    theme_section_pattern = re.compile(r"^\s*Тематика\s*\d+\s*:\s*(.*)$", re.IGNORECASE)
+
+    items: list[QuestionItem] = []
+    current_theme = ""
+    current: dict[str, str | int | None] | None = None
+    current_field: str | None = None
+
+    def flush_current() -> None:
+        nonlocal current, current_field
+        if not current:
+            return
+
+        question = normalize_spaces(str(current.get("question", "")))
+        if question:
+            items.append(
+                QuestionItem(
+                    number=current.get("number"),
+                    theme=normalize_spaces(str(current.get("theme", ""))),
+                    question=question,
+                    answer=normalize_spaces(str(current.get("answer", ""))),
+                    comment=normalize_spaces(str(current.get("comment", ""))),
+                    source=normalize_spaces(str(current.get("source", ""))),
+                )
+            )
+
+        current = None
+        current_field = None
+
+    for raw_line in lines[start_index + 1 :]:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        if len(items) >= max_questions:
+            break
+
+        theme_match = theme_section_pattern.match(line)
+        if theme_match:
+            flush_current()
+            current_theme = normalize_spaces(theme_match.group(1))
+            continue
+
+        number_match = NUMBER_PATTERN.match(line)
+        if number_match and not is_field_line(line):
+            flush_current()
+            current = {
+                "number": int(number_match.group(1)),
+                "theme": current_theme,
+                "question": normalize_spaces(NUMBER_PATTERN.sub("", line, count=1)),
+            }
+            current_field = "question"
+            continue
+
+        if current is None:
+            continue
+
+        matched_field = None
+        for field_name, pattern in FIELD_PATTERNS.items():
+            match = pattern.match(line)
+            if match:
+                matched_field = field_name
+                if field_name == "theme":
+                    current_field = None
+                    break
+
+                value = match.group(1).strip()
+                if value:
+                    current[field_name] = value
+                elif field_name not in current:
+                    current[field_name] = ""
+                current_field = field_name
+                break
+
+        if matched_field:
+            continue
+
+        if current_field:
+            existing = str(current.get(current_field, "")).strip()
+            current[current_field] = f"{existing} {line}".strip()
+
+    flush_current()
+    return items[:max_questions]
+
+
 def replace_placeholder(text: str, placeholder: str, value: str) -> str:
     return re.sub(re.escape(placeholder), value, text, flags=re.IGNORECASE)
 
@@ -265,7 +362,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Берёт вопросы из Word.docx и подставляет их тематику и текст вопроса "
-            "в слайды 6-14, 16-24, 26-34 и раунд «В картинках» в 36-41/43-48/50-55"
+            "в слайды 6-14,16-24,26-34; «В картинках» 36-41/43-48/50-55; и «3х3=12» 57-65/67-75/77-85"
         )
     )
     parser.add_argument("--word", default="Word.docx", type=Path, help="Путь к Word-файлу")
@@ -341,6 +438,32 @@ def main() -> None:
         answer_slide_replacements = base_replacements.copy()
         answer_slide_replacements["верный ответ"] = question.answer
         slide_replacements[base_slide_number + 14] = answer_slide_replacements
+
+    round_three_questions = parse_round_with_section_themes_from_docx(
+        args.word,
+        round_title="3х3=12",
+        max_questions=9,
+    )
+    if len(round_three_questions) < 9:
+        raise ValueError(
+            "В раунде '3х3=12' найдено меньше 9 вопросов. "
+            "Нужны вопросы для слайдов 57..65, 67..75 и 77..85."
+        )
+
+    for question_number in range(1, 10):
+        question = round_three_questions[question_number - 1]
+        base_slide_number = question_number + 56
+        base_replacements = {
+            "тематика": question.theme,
+            "вопрос": question.question,
+        }
+
+        slide_replacements[base_slide_number] = base_replacements.copy()
+        slide_replacements[base_slide_number + 10] = base_replacements.copy()
+
+        answer_slide_replacements = base_replacements.copy()
+        answer_slide_replacements["верный ответ"] = question.answer
+        slide_replacements[base_slide_number + 20] = answer_slide_replacements
 
     try:
         fill_slide_placeholders(
