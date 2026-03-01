@@ -362,7 +362,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Берёт вопросы из Word.docx и подставляет их тематику и текст вопроса "
-            "в слайды 6-14,16-24,26-34; «В картинках» 36-41/43-48/50-55; и «3х3=12» 57-65/67-75/77-85"
+            "в слайды 6-14,16-24,26-34; «В картинках» 36-41/43-48/50-55; «3х3=12» 57-65/67-75/77-85; «4 Мультимедиа» 89-97/99-107"
         )
     )
     parser.add_argument("--word", default="Word.docx", type=Path, help="Путь к Word-файлу")
@@ -464,6 +464,30 @@ def main() -> None:
         answer_slide_replacements = base_replacements.copy()
         answer_slide_replacements["верный ответ"] = question.answer
         slide_replacements[base_slide_number + 20] = answer_slide_replacements
+
+    round_four_questions = parse_round_without_theme_from_docx(
+        args.word,
+        round_title="4 Мультимедиа",
+        max_questions=9,
+    )
+    if len(round_four_questions) < 9:
+        raise ValueError(
+            "В раунде '4 Мультимедиа' найдено меньше 9 вопросов. "
+            "Нужны вопросы для слайдов 89..97 и 99..107."
+        )
+
+    for question_number in range(1, 10):
+        question = round_four_questions[question_number - 1]
+        base_slide_number = question_number + 88
+        base_replacements = {
+            "вопрос": question.question,
+        }
+
+        slide_replacements[base_slide_number] = base_replacements.copy()
+
+        answer_slide_replacements = base_replacements.copy()
+        answer_slide_replacements["верный ответ"] = question.answer
+        slide_replacements[base_slide_number + 10] = answer_slide_replacements
 
     try:
         fill_slide_placeholders(
