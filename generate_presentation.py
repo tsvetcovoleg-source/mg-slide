@@ -32,6 +32,10 @@ FIELD_PATTERNS = {
 NUMBER_PATTERN = re.compile(r"^\s*(\d+)\.\s*")
 
 
+def is_field_line(line: str) -> bool:
+    return any(pattern.match(line) for pattern in FIELD_PATTERNS.values())
+
+
 def normalize_spaces(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
@@ -74,6 +78,12 @@ def parse_questions_from_docx(docx_path: Path) -> list[QuestionItem]:
         if number_match and FIELD_PATTERNS["theme"].match(line):
             flush_current()
             current = {"number": int(number_match.group(1))}
+        elif number_match and not is_field_line(line):
+            # Новый пронумерованный блок без поля "Тематика:" означает, что
+            # предыдущий тематический вопрос завершён.
+            flush_current()
+            current = None
+            continue
 
         if current is None:
             current = {"number": None}
