@@ -112,6 +112,92 @@ def parse_questions_from_docx(docx_path: Path) -> list[QuestionItem]:
     return items
 
 
+def parse_round_without_theme_from_docx(
+    docx_path: Path,
+    round_title: str,
+    max_questions: int,
+) -> list[QuestionItem]:
+    """Parse a numbered round where question text starts on lines like `1. ...` without `Тематика:`."""
+    doc = Document(str(docx_path))
+    lines = [p.text.strip() for p in doc.paragraphs]
+
+    start_index = next((i for i, line in enumerate(lines) if normalize_spaces(line).lower() == round_title.lower()), None)
+    if start_index is None:
+        return []
+
+    items: list[QuestionItem] = []
+    current: dict[str, str | int | None] | None = None
+    current_field: str | None = None
+
+    def flush_current() -> None:
+        nonlocal current, current_field
+        if not current:
+            return
+        question = normalize_spaces(str(current.get("question", "")))
+        if question:
+            items.append(
+                QuestionItem(
+                    number=current.get("number"),
+                    theme="",
+                    question=question,
+                    answer=normalize_spaces(str(current.get("answer", ""))),
+                    comment=normalize_spaces(str(current.get("comment", ""))),
+                    source=normalize_spaces(str(current.get("source", ""))),
+                )
+            )
+        current = None
+        current_field = None
+
+    for raw_line in lines[start_index + 1 :]:
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        if len(items) >= max_questions:
+            break
+
+        number_match = NUMBER_PATTERN.match(line)
+        if number_match and not is_field_line(line):
+            flush_current()
+            current = {
+                "number": int(number_match.group(1)),
+                "question": normalize_spaces(NUMBER_PATTERN.sub("", line, count=1)),
+            }
+            current_field = "question"
+            continue
+
+        if current is None:
+            continue
+
+        matched_field = None
+        for field_name, pattern in FIELD_PATTERNS.items():
+            match = pattern.match(line)
+            if match:
+                matched_field = field_name
+                if field_name == "theme":
+                    # Для этого раунда тематику пропускаем.
+                    current_field = None
+                    break
+
+                value = match.group(1).strip()
+                if value:
+                    current[field_name] = value
+                elif field_name not in current:
+                    current[field_name] = ""
+                current_field = field_name
+                break
+
+        if matched_field:
+            continue
+
+        if current_field:
+            existing = str(current.get(current_field, "")).strip()
+            current[current_field] = f"{existing} {line}".strip()
+
+    flush_current()
+    return items[:max_questions]
+
+
 def replace_placeholder(text: str, placeholder: str, value: str) -> str:
     return re.sub(re.escape(placeholder), value, text, flags=re.IGNORECASE)
 
@@ -179,7 +265,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Берёт вопросы из Word.docx и подставляет их тематику и текст вопроса "
-            "в слайды 6-14 и повторы 16-24/26-34 (в 26-34 также подставляет верный ответ)"
+            "в слайды 6-14, 16-24, 26-34 и раунд «В картинках» в 36-41/43-48/50-55"
         )
     )
     parser.add_argument("--word", default="Word.docx", type=Path, help="Путь к Word-файлу")
@@ -230,6 +316,31 @@ def main() -> None:
             f"В Word-файле не хватает вопросов с номерами: {missing}. "
             "Нужны вопросы №1..№9 для заполнения слайдов 6..14, 16..24 и 26..34."
         )
+
+    round_two_questions = parse_round_without_theme_from_docx(
+        args.word,
+        round_title="В картинках",
+        max_questions=6,
+    )
+    if len(round_two_questions) < 6:
+        raise ValueError(
+            "В раунде 'В картинках' найдено меньше 6 вопросов. "
+            "Нужны вопросы для слайдов 36..41, 43..48 и 50..55."
+        )
+
+    for question_number in range(1, 7):
+        question = round_two_questions[question_number - 1]
+        base_slide_number = question_number + 35
+        base_replacements = {
+            "вопрос": question.question,
+        }
+
+        slide_replacements[base_slide_number] = base_replacements.copy()
+        slide_replacements[base_slide_number + 7] = base_replacements.copy()
+
+        answer_slide_replacements = base_replacements.copy()
+        answer_slide_replacements["верный ответ"] = question.answer
+        slide_replacements[base_slide_number + 14] = answer_slide_replacements
 
     try:
         fill_slide_placeholders(
