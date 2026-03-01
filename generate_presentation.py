@@ -155,8 +155,11 @@ def fill_slide_placeholders(
             )
 
         slide = prs.slides[slide_index]
-        for shape in slide.shapes:
-            replace_in_shape(shape, replacements)
+        try:
+            for shape in slide.shapes:
+                replace_in_shape(shape, replacements)
+        except Exception as exc:
+            raise RuntimeError(f"Ошибка при заполнении слайда {slide_number}: {exc}") from exc
 
     prs.save(str(output_path))
 
@@ -228,21 +231,17 @@ def main() -> None:
             "Нужны вопросы №1..№9 для заполнения слайдов 6..14, 16..24 и 26..34."
         )
 
-    fill_slide_placeholders(
-        presentation_path=args.template,
-        output_path=args.output,
-        slide_replacements=slide_replacements,
-    )
-
-    print(f"Готово: создан файл {args.output}")
-    for slide_number in sorted(slide_replacements):
-        question = slide_replacements[slide_number]
-        message = (
-            f"Слайд {slide_number}: тематика='{question['тематика']}', вопрос='{question['вопрос']}'"
+    try:
+        fill_slide_placeholders(
+            presentation_path=args.template,
+            output_path=args.output,
+            slide_replacements=slide_replacements,
         )
-        if "верный ответ" in question:
-            message += f", верный ответ='{question['верный ответ']}'"
-        print(message)
+    except Exception as exc:
+        print(f"Ошибка: {exc}")
+        raise SystemExit(1) from exc
+
+    print("Готово: заполнение прошло успешно.")
 
 
 if __name__ == "__main__":
