@@ -158,11 +158,15 @@ def find_question(questions: list[QuestionItem], number: int) -> QuestionItem | 
     return None
 
 
+def get_question_for_number(questions: list[QuestionItem], number: int) -> QuestionItem | None:
+    return find_question(questions, number) or (questions[number - 1] if len(questions) >= number else None)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Берёт первый вопрос из Word.docx и подставляет его тематику и текст вопроса "
-            "в 6-й слайд шаблона Presentation1.pptx"
+            "Берёт вопросы из Word.docx и подставляет их тематику и текст вопроса "
+            "в слайды 6-14 шаблона Presentation1.pptx"
         )
     )
     parser.add_argument("--word", default="Word.docx", type=Path, help="Путь к Word-файлу")
@@ -184,30 +188,41 @@ def main() -> None:
     if not questions:
         raise ValueError("В Word-файле не найдено ни одного корректного блока с Тематикой и Вопросом.")
 
-    first = find_question(questions, 1) or questions[0]
-    second = find_question(questions, 2) or (questions[1] if len(questions) > 1 else None)
+    max_question_number = 9
+    missing_numbers: list[int] = []
+    slide_replacements: dict[int, dict[str, str]] = {}
 
-    if second is None:
-        raise ValueError("В Word-файле не найден второй вопрос (№2) для заполнения 7-го слайда.")
+    for question_number in range(1, max_question_number + 1):
+        question = get_question_for_number(questions, question_number)
+        if question is None:
+            missing_numbers.append(question_number)
+            continue
+
+        slide_number = question_number + 5
+        slide_replacements[slide_number] = {
+            "тематика": question.theme,
+            "вопрос": question.question,
+        }
+
+    if missing_numbers:
+        missing = ", ".join(str(n) for n in missing_numbers)
+        raise ValueError(
+            f"В Word-файле не хватает вопросов с номерами: {missing}. "
+            "Нужны вопросы №1..№9 для заполнения слайдов 6..14."
+        )
 
     fill_slide_placeholders(
         presentation_path=args.template,
         output_path=args.output,
-        slide_replacements={
-            6: {
-                "тематика": first.theme,
-                "вопрос": first.question,
-            },
-            7: {
-                "тематика": second.theme,
-                "вопрос": second.question,
-            },
-        },
+        slide_replacements=slide_replacements,
     )
 
     print(f"Готово: создан файл {args.output}")
-    print(f"Слайд 6: тематика='{first.theme}', вопрос='{first.question}'")
-    print(f"Слайд 7: тематика='{second.theme}', вопрос='{second.question}'")
+    for slide_number in sorted(slide_replacements):
+        question = slide_replacements[slide_number]
+        print(
+            f"Слайд {slide_number}: тематика='{question['тематика']}', вопрос='{question['вопрос']}'"
+        )
 
 
 if __name__ == "__main__":
