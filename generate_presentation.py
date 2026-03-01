@@ -166,7 +166,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Берёт вопросы из Word.docx и подставляет их тематику и текст вопроса "
-            "в слайды 6-14 и их повторы 16-24 шаблона Presentation1.pptx"
+            "в слайды 6-14 и их повторы 16-24 и 26-34 шаблона Presentation1.pptx"
         )
     )
     parser.add_argument("--word", default="Word.docx", type=Path, help="Путь к Word-файлу")
@@ -206,12 +206,13 @@ def main() -> None:
 
         slide_replacements[base_slide_number] = replacements
         slide_replacements[base_slide_number + 10] = replacements.copy()
+        slide_replacements[base_slide_number + 20] = replacements.copy()
 
     if missing_numbers:
         missing = ", ".join(str(n) for n in missing_numbers)
         raise ValueError(
             f"В Word-файле не хватает вопросов с номерами: {missing}. "
-            "Нужны вопросы №1..№9 для заполнения слайдов 6..14 и 16..24."
+            "Нужны вопросы №1..№9 для заполнения слайдов 6..14, 16..24 и 26..34."
         )
 
     fill_slide_placeholders(
