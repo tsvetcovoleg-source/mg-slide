@@ -10,6 +10,12 @@ from pathlib import Path
 
 from docx import Document
 from pptx import Presentation
+from pptx.enum.text import PP_ALIGN
+from pptx.util import Pt
+
+
+FONT_NAME_REGULAR = "Montserrat Medium"
+FONT_NAME_BOLD = "Montserrat Bold"
 
 
 @dataclass
@@ -17,6 +23,7 @@ class QuestionItem:
     number: int | None
     theme: str
     question: str
+    question_runs: list[dict[str, bool | str]] | None = None
     answer: str = ""
     comment: str = ""
     source: str = ""
@@ -32,6 +39,47 @@ FIELD_PATTERNS = {
 NUMBER_PATTERN = re.compile(r"^\s*(\d+)\.\s*")
 
 
+def extract_runs_slice(paragraph, start: int, end: int | None = None) -> list[dict[str, bool | str]]:
+    chunks: list[dict[str, bool | str]] = []
+    cursor = 0
+    limit = len(paragraph.text) if end is None else end
+    for run in paragraph.runs:
+        run_text = run.text or ""
+        run_len = len(run_text)
+        run_start = cursor
+        run_end = cursor + run_len
+        cursor = run_end
+        if run_len == 0 or run_end <= start or run_start >= limit:
+            continue
+
+        local_start = max(0, start - run_start)
+        local_end = min(run_len, limit - run_start)
+        text = run_text[local_start:local_end]
+        if text:
+            chunks.append(
+                {
+                    "text": text,
+                    "bold": bool(run.bold),
+                    "italic": bool(run.italic),
+                    "underline": bool(run.underline),
+                }
+            )
+    return chunks
+
+
+def append_runs(target: list[dict[str, bool | str]], new_runs: list[dict[str, bool | str]], with_space: bool = False) -> list[dict[str, bool | str]]:
+    if with_space and target:
+        target.append({"text": " ", "bold": False, "italic": False, "underline": False})
+    target.extend(new_runs)
+    return target
+
+
+def runs_to_plain_text(runs: list[dict[str, bool | str]] | None) -> str:
+    if not runs:
+        return ""
+    return normalize_spaces("".join(str(item["text"]) for item in runs))
+
+
 def is_field_line(line: str) -> bool:
     return any(pattern.match(line) for pattern in FIELD_PATTERNS.values())
 
@@ -43,10 +91,9 @@ def normalize_spaces(value: str) -> str:
 def parse_questions_from_docx(docx_path: Path) -> list[QuestionItem]:
     """Parse questions from a .docx with blocks containing Тематика/Вопрос/... fields."""
     doc = Document(str(docx_path))
-    lines = [p.text.strip() for p in doc.paragraphs]
 
     items: list[QuestionItem] = []
-    current: dict[str, str | int | None] | None = None
+    current: dict[str, str | int | None | list[dict[str, bool | str]]] | None = None
     current_field: str | None = None
 
     def flush_current() -> None:
@@ -54,13 +101,17 @@ def parse_questions_from_docx(docx_path: Path) -> list[QuestionItem]:
         if not current:
             return
         theme = normalize_spaces(str(current.get("theme", "")))
-        question = normalize_spaces(str(current.get("question", "")))
+        question_runs = current.get("question_runs")
+        question = runs_to_plain_text(question_runs if isinstance(question_runs, list) else None)
+        if not question:
+            question = normalize_spaces(str(current.get("question", "")))
         if theme and question:
             items.append(
                 QuestionItem(
                     number=current.get("number"),
                     theme=theme,
                     question=question,
+                    question_runs=question_runs if isinstance(question_runs, list) else None,
                     answer=normalize_spaces(str(current.get("answer", ""))),
                     comment=normalize_spaces(str(current.get("comment", ""))),
                     source=normalize_spaces(str(current.get("source", ""))),
@@ -69,8 +120,8 @@ def parse_questions_from_docx(docx_path: Path) -> list[QuestionItem]:
         current = None
         current_field = None
 
-    for raw_line in lines:
-        line = raw_line.strip()
+    for paragraph in doc.paragraphs:
+        line = paragraph.text.strip()
         if not line:
             continue
 
@@ -79,8 +130,6 @@ def parse_questions_from_docx(docx_path: Path) -> list[QuestionItem]:
             flush_current()
             current = {"number": int(number_match.group(1))}
         elif number_match and not is_field_line(line):
-            # Новый пронумерованный блок без поля "Тематика:" означает, что
-            # предыдущий тематический вопрос завершён.
             flush_current()
             current = None
             continue
@@ -99,6 +148,11 @@ def parse_questions_from_docx(docx_path: Path) -> list[QuestionItem]:
                 elif field_name not in current:
                     current[field_name] = ""
                 current_field = field_name
+
+                if field_name == "question":
+                    field_start = match.start(1)
+                    question_runs = extract_runs_slice(paragraph, field_start)
+                    current["question_runs"] = question_runs
                 break
 
         if matched_field:
@@ -107,6 +161,10 @@ def parse_questions_from_docx(docx_path: Path) -> list[QuestionItem]:
         if current_field:
             existing = str(current.get(current_field, "")).strip()
             current[current_field] = f"{existing} {line}".strip()
+            if current_field == "question":
+                current_question_runs = current.get("question_runs")
+                if isinstance(current_question_runs, list):
+                    append_runs(current_question_runs, extract_runs_slice(paragraph, 0), with_space=True)
 
     flush_current()
     return items
@@ -402,6 +460,59 @@ def replace_placeholder(text: str, placeholder: str, value: str) -> str:
     return re.sub(re.escape(placeholder), value, text, flags=re.IGNORECASE)
 
 
+def choose_question_font_size(question_text: str) -> int:
+    length = len(question_text)
+    if length <= 60:
+        return 50
+    if length <= 120:
+        return 50
+    if length <= 150:
+        return 48
+    if length <= 180:
+        return 48
+    if length <= 210:
+        return 44
+    if length <= 240:
+        return 40
+    return 36
+
+
+def apply_font(run_obj, font_size: int, bold: bool = False, italic: bool = False, underline: bool = False) -> None:
+    font = run_obj.font
+    font.name = FONT_NAME_BOLD if bold else FONT_NAME_REGULAR
+    font.size = Pt(font_size)
+    font.bold = bold
+    font.italic = italic
+    font.underline = underline
+
+
+def fill_question_shape(shape, question_text: str, question_runs: list[dict[str, bool | str]] | None) -> None:
+    font_size = choose_question_font_size(question_text)
+    runs_data = question_runs or [{"text": question_text, "bold": False, "italic": False, "underline": False}]
+
+    tf = shape.text_frame
+    tf.clear()
+    tf.word_wrap = True
+    tf.margin_left = 0
+    tf.margin_right = 0
+    tf.margin_top = 0
+    tf.margin_bottom = 0
+
+    p = tf.paragraphs[0]
+    p.alignment = PP_ALIGN.LEFT
+
+    for item in runs_data:
+        r = p.add_run()
+        r.text = str(item["text"])
+        apply_font(
+            r,
+            font_size=font_size,
+            bold=bool(item.get("bold", False)),
+            italic=bool(item.get("italic", False)),
+            underline=bool(item.get("underline", False)),
+        )
+
+
 def replace_in_text_frame(text_frame, replacements: dict[str, str]) -> None:
     for paragraph in text_frame.paragraphs:
         for run in paragraph.runs:
@@ -412,9 +523,14 @@ def replace_in_text_frame(text_frame, replacements: dict[str, str]) -> None:
 
 
 
-def replace_in_shape(shape, replacements: dict[str, str]) -> None:
+def replace_in_shape(shape, replacements: dict[str, str], question_runs: list[dict[str, bool | str]] | None = None) -> None:
     if getattr(shape, "has_text_frame", False):
-        replace_in_text_frame(shape.text_frame, replacements)
+        shape_text = normalize_spaces(shape.text_frame.text).lower()
+        question_text = replacements.get("вопрос", "")
+        if question_text and shape_text == "вопрос":
+            fill_question_shape(shape, question_text, question_runs)
+        else:
+            replace_in_text_frame(shape.text_frame, replacements)
 
     if getattr(shape, "has_table", False):
         for row in shape.table.rows:
@@ -423,13 +539,14 @@ def replace_in_shape(shape, replacements: dict[str, str]) -> None:
 
     if shape.shape_type == 6:  # MSO_SHAPE_TYPE.GROUP
         for subshape in shape.shapes:
-            replace_in_shape(subshape, replacements)
+            replace_in_shape(subshape, replacements, question_runs=question_runs)
 
 
 def fill_slide_placeholders(
     presentation_path: Path,
     output_path: Path,
     slide_replacements: dict[int, dict[str, str]],
+    slide_question_runs: dict[int, list[dict[str, bool | str]] | None],
 ) -> None:
     prs = Presentation(str(presentation_path))
 
@@ -443,7 +560,7 @@ def fill_slide_placeholders(
         slide = prs.slides[slide_index]
         try:
             for shape in slide.shapes:
-                replace_in_shape(shape, replacements)
+                replace_in_shape(shape, replacements, question_runs=slide_question_runs.get(slide_number))
         except Exception as exc:
             raise RuntimeError(f"Ошибка при заполнении слайда {slide_number}: {exc}") from exc
 
@@ -490,6 +607,7 @@ def main() -> None:
     max_question_number = 9
     missing_numbers: list[int] = []
     slide_replacements: dict[int, dict[str, str]] = {}
+    slide_question_runs: dict[int, list[dict[str, bool | str]] | None] = {}
 
     for question_number in range(1, max_question_number + 1):
         question = get_question_for_number(questions, question_number)
@@ -504,11 +622,14 @@ def main() -> None:
         }
 
         slide_replacements[base_slide_number] = base_replacements.copy()
+        slide_question_runs[base_slide_number] = question.question_runs
         slide_replacements[base_slide_number + 10] = base_replacements.copy()
+        slide_question_runs[base_slide_number + 10] = question.question_runs
 
         answer_slide_replacements = base_replacements.copy()
         answer_slide_replacements["верный ответ"] = question.answer
         slide_replacements[base_slide_number + 20] = answer_slide_replacements
+        slide_question_runs[base_slide_number + 20] = question.question_runs
 
     if missing_numbers:
         missing = ", ".join(str(n) for n in missing_numbers)
@@ -536,11 +657,14 @@ def main() -> None:
         }
 
         slide_replacements[base_slide_number] = base_replacements.copy()
+        slide_question_runs[base_slide_number] = question.question_runs
         slide_replacements[base_slide_number + 7] = base_replacements.copy()
+        slide_question_runs[base_slide_number + 7] = question.question_runs
 
         answer_slide_replacements = base_replacements.copy()
         answer_slide_replacements["верный ответ"] = question.answer
         slide_replacements[base_slide_number + 14] = answer_slide_replacements
+        slide_question_runs[base_slide_number + 14] = question.question_runs
 
     round_three_questions = parse_round_with_section_themes_from_docx(
         args.word,
@@ -562,11 +686,14 @@ def main() -> None:
         }
 
         slide_replacements[base_slide_number] = base_replacements.copy()
+        slide_question_runs[base_slide_number] = question.question_runs
         slide_replacements[base_slide_number + 10] = base_replacements.copy()
+        slide_question_runs[base_slide_number + 10] = question.question_runs
 
         answer_slide_replacements = base_replacements.copy()
         answer_slide_replacements["верный ответ"] = question.answer
         slide_replacements[base_slide_number + 20] = answer_slide_replacements
+        slide_question_runs[base_slide_number + 20] = question.question_runs
 
     round_four_questions = parse_round_without_theme_from_docx(
         args.word,
@@ -587,10 +714,12 @@ def main() -> None:
         }
 
         slide_replacements[base_slide_number] = base_replacements.copy()
+        slide_question_runs[base_slide_number] = question.question_runs
 
         answer_slide_replacements = base_replacements.copy()
         answer_slide_replacements["верный ответ"] = question.answer
         slide_replacements[base_slide_number + 10] = answer_slide_replacements
+        slide_question_runs[base_slide_number + 10] = question.question_runs
 
     round_five_questions = parse_round_without_theme_from_docx(
         args.word,
@@ -611,11 +740,14 @@ def main() -> None:
         }
 
         slide_replacements[base_slide_number] = base_replacements.copy()
+        slide_question_runs[base_slide_number] = question.question_runs
         slide_replacements[base_slide_number + 7] = base_replacements.copy()
+        slide_question_runs[base_slide_number + 7] = question.question_runs
 
         answer_slide_replacements = base_replacements.copy()
         answer_slide_replacements["верный ответ"] = question.answer
         slide_replacements[base_slide_number + 14] = answer_slide_replacements
+        slide_question_runs[base_slide_number + 14] = question.question_runs
 
     round_six_questions = parse_round_with_constant_theme_from_docx(
         args.word,
@@ -638,11 +770,14 @@ def main() -> None:
         }
 
         slide_replacements[base_slide_number] = base_replacements.copy()
+        slide_question_runs[base_slide_number] = question.question_runs
         slide_replacements[base_slide_number + 7] = base_replacements.copy()
+        slide_question_runs[base_slide_number + 7] = question.question_runs
 
         answer_slide_replacements = base_replacements.copy()
         answer_slide_replacements["верный ответ"] = question.answer
         slide_replacements[base_slide_number + 14] = answer_slide_replacements
+        slide_question_runs[base_slide_number + 14] = question.question_runs
 
     round_seven_questions = parse_round_without_theme_from_docx(
         args.word,
@@ -663,16 +798,19 @@ def main() -> None:
         }
 
         slide_replacements[base_slide_number] = base_replacements.copy()
+        slide_question_runs[base_slide_number] = question.question_runs
 
         answer_slide_replacements = base_replacements.copy()
         answer_slide_replacements["верный ответ"] = question.answer
         slide_replacements[base_slide_number + 7] = answer_slide_replacements
+        slide_question_runs[base_slide_number + 7] = question.question_runs
 
     try:
         fill_slide_placeholders(
             presentation_path=args.template,
             output_path=args.output,
             slide_replacements=slide_replacements,
+            slide_question_runs=slide_question_runs,
         )
     except Exception as exc:
         print(f"Ошибка: {exc}")
