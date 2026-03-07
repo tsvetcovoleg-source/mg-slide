@@ -177,14 +177,21 @@ def parse_round_without_theme_from_docx(
 ) -> list[QuestionItem]:
     """Parse a numbered round where question text starts on lines like `1. ...` without `Тематика:`."""
     doc = Document(str(docx_path))
-    lines = [p.text.strip() for p in doc.paragraphs]
+    paragraphs = doc.paragraphs
 
-    start_index = next((i for i, line in enumerate(lines) if normalize_spaces(line).lower() == round_title.lower()), None)
+    start_index = next(
+        (
+            i
+            for i, paragraph in enumerate(paragraphs)
+            if normalize_spaces(paragraph.text).lower() == round_title.lower()
+        ),
+        None,
+    )
     if start_index is None:
         return []
 
     items: list[QuestionItem] = []
-    current: dict[str, str | int | None] | None = None
+    current: dict[str, str | int | None | list[dict[str, bool | str]]] | None = None
     current_field: str | None = None
 
     def flush_current() -> None:
@@ -198,6 +205,7 @@ def parse_round_without_theme_from_docx(
                     number=current.get("number"),
                     theme="",
                     question=question,
+                    question_runs=current.get("question_runs") if isinstance(current.get("question_runs"), list) else None,
                     answer=normalize_spaces(str(current.get("answer", ""))),
                     comment=normalize_spaces(str(current.get("comment", ""))),
                     source=normalize_spaces(str(current.get("source", ""))),
@@ -206,8 +214,8 @@ def parse_round_without_theme_from_docx(
         current = None
         current_field = None
 
-    for raw_line in lines[start_index + 1 :]:
-        line = raw_line.strip()
+    for paragraph in paragraphs[start_index + 1 :]:
+        line = paragraph.text.strip()
         if not line:
             continue
 
@@ -220,6 +228,7 @@ def parse_round_without_theme_from_docx(
             current = {
                 "number": int(number_match.group(1)),
                 "question": normalize_spaces(NUMBER_PATTERN.sub("", line, count=1)),
+                "question_runs": extract_runs_slice(paragraph, number_match.end()),
             }
             current_field = "question"
             continue
@@ -243,6 +252,8 @@ def parse_round_without_theme_from_docx(
                 elif field_name not in current:
                     current[field_name] = ""
                 current_field = field_name
+                if field_name == "question":
+                    current["question_runs"] = extract_runs_slice(paragraph, match.start(1))
                 break
 
         if matched_field:
@@ -251,6 +262,10 @@ def parse_round_without_theme_from_docx(
         if current_field:
             existing = str(current.get(current_field, "")).strip()
             current[current_field] = f"{existing} {line}".strip()
+            if current_field == "question":
+                current_question_runs = current.get("question_runs")
+                if isinstance(current_question_runs, list):
+                    append_runs(current_question_runs, extract_runs_slice(paragraph, 0), with_space=True)
 
     flush_current()
     return items[:max_questions]
@@ -263,9 +278,16 @@ def parse_round_with_section_themes_from_docx(
 ) -> list[QuestionItem]:
     """Parse a numbered round where themes are declared as `Тематика N: ...` for groups of questions."""
     doc = Document(str(docx_path))
-    lines = [p.text.strip() for p in doc.paragraphs]
+    paragraphs = doc.paragraphs
 
-    start_index = next((i for i, line in enumerate(lines) if normalize_spaces(line).lower() == round_title.lower()), None)
+    start_index = next(
+        (
+            i
+            for i, paragraph in enumerate(paragraphs)
+            if normalize_spaces(paragraph.text).lower() == round_title.lower()
+        ),
+        None,
+    )
     if start_index is None:
         return []
 
@@ -273,7 +295,7 @@ def parse_round_with_section_themes_from_docx(
 
     items: list[QuestionItem] = []
     current_theme = ""
-    current: dict[str, str | int | None] | None = None
+    current: dict[str, str | int | None | list[dict[str, bool | str]]] | None = None
     current_field: str | None = None
 
     def flush_current() -> None:
@@ -288,6 +310,7 @@ def parse_round_with_section_themes_from_docx(
                     number=current.get("number"),
                     theme=normalize_spaces(str(current.get("theme", ""))),
                     question=question,
+                    question_runs=current.get("question_runs") if isinstance(current.get("question_runs"), list) else None,
                     answer=normalize_spaces(str(current.get("answer", ""))),
                     comment=normalize_spaces(str(current.get("comment", ""))),
                     source=normalize_spaces(str(current.get("source", ""))),
@@ -297,8 +320,8 @@ def parse_round_with_section_themes_from_docx(
         current = None
         current_field = None
 
-    for raw_line in lines[start_index + 1 :]:
-        line = raw_line.strip()
+    for paragraph in paragraphs[start_index + 1 :]:
+        line = paragraph.text.strip()
         if not line:
             continue
 
@@ -318,6 +341,7 @@ def parse_round_with_section_themes_from_docx(
                 "number": int(number_match.group(1)),
                 "theme": current_theme,
                 "question": normalize_spaces(NUMBER_PATTERN.sub("", line, count=1)),
+                "question_runs": extract_runs_slice(paragraph, number_match.end()),
             }
             current_field = "question"
             continue
@@ -340,6 +364,8 @@ def parse_round_with_section_themes_from_docx(
                 elif field_name not in current:
                     current[field_name] = ""
                 current_field = field_name
+                if field_name == "question":
+                    current["question_runs"] = extract_runs_slice(paragraph, match.start(1))
                 break
 
         if matched_field:
@@ -348,6 +374,10 @@ def parse_round_with_section_themes_from_docx(
         if current_field:
             existing = str(current.get(current_field, "")).strip()
             current[current_field] = f"{existing} {line}".strip()
+            if current_field == "question":
+                current_question_runs = current.get("question_runs")
+                if isinstance(current_question_runs, list):
+                    append_runs(current_question_runs, extract_runs_slice(paragraph, 0), with_space=True)
 
     flush_current()
     return items[:max_questions]
@@ -361,16 +391,23 @@ def parse_round_with_constant_theme_from_docx(
 ) -> list[QuestionItem]:
     """Parse a numbered round with a fixed theme line like `Тема: 12`."""
     doc = Document(str(docx_path))
-    lines = [p.text.strip() for p in doc.paragraphs]
+    paragraphs = doc.paragraphs
 
-    start_index = next((i for i, line in enumerate(lines) if normalize_spaces(line).lower() == round_title.lower()), None)
+    start_index = next(
+        (
+            i
+            for i, paragraph in enumerate(paragraphs)
+            if normalize_spaces(paragraph.text).lower() == round_title.lower()
+        ),
+        None,
+    )
     if start_index is None:
         return []
 
     theme_value = ""
     theme_pattern = re.compile(rf"^\s*{re.escape(theme_label)}\s*:\s*(.*)$", re.IGNORECASE)
-    for raw_line in lines[start_index + 1 :]:
-        line = raw_line.strip()
+    for paragraph in paragraphs[start_index + 1 :]:
+        line = paragraph.text.strip()
         if not line:
             continue
 
@@ -380,7 +417,7 @@ def parse_round_with_constant_theme_from_docx(
             break
 
     items: list[QuestionItem] = []
-    current: dict[str, str | int | None] | None = None
+    current: dict[str, str | int | None | list[dict[str, bool | str]]] | None = None
     current_field: str | None = None
 
     def flush_current() -> None:
@@ -395,6 +432,7 @@ def parse_round_with_constant_theme_from_docx(
                     number=current.get("number"),
                     theme=theme_value,
                     question=question,
+                    question_runs=current.get("question_runs") if isinstance(current.get("question_runs"), list) else None,
                     answer=normalize_spaces(str(current.get("answer", ""))),
                     comment=normalize_spaces(str(current.get("comment", ""))),
                     source=normalize_spaces(str(current.get("source", ""))),
@@ -404,8 +442,8 @@ def parse_round_with_constant_theme_from_docx(
         current = None
         current_field = None
 
-    for raw_line in lines[start_index + 1 :]:
-        line = raw_line.strip()
+    for paragraph in paragraphs[start_index + 1 :]:
+        line = paragraph.text.strip()
         if not line:
             continue
 
@@ -421,6 +459,7 @@ def parse_round_with_constant_theme_from_docx(
             current = {
                 "number": int(number_match.group(1)),
                 "question": normalize_spaces(NUMBER_PATTERN.sub("", line, count=1)),
+                "question_runs": extract_runs_slice(paragraph, number_match.end()),
             }
             current_field = "question"
             continue
@@ -443,6 +482,8 @@ def parse_round_with_constant_theme_from_docx(
                 elif field_name not in current:
                     current[field_name] = ""
                 current_field = field_name
+                if field_name == "question":
+                    current["question_runs"] = extract_runs_slice(paragraph, match.start(1))
                 break
 
         if matched_field:
@@ -451,6 +492,10 @@ def parse_round_with_constant_theme_from_docx(
         if current_field:
             existing = str(current.get(current_field, "")).strip()
             current[current_field] = f"{existing} {line}".strip()
+            if current_field == "question":
+                current_question_runs = current.get("question_runs")
+                if isinstance(current_question_runs, list):
+                    append_runs(current_question_runs, extract_runs_slice(paragraph, 0), with_space=True)
 
     flush_current()
     return items[:max_questions]
